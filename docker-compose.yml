@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  mosquitto:
+    container_name: mosquitto
+    build:
+      context: ./mosquitto
+      dockerfile: Containerfile
+    network_mode: host
+    volumes:
+      - ./certs:/certs:ro
+    restart: unless-stopped
+
+  ble:
+    container_name: ble
+    build:
+      context: ./ble
+      dockerfile: Containerfile
+    network_mode: host
+    privileged: true
+    environment:
+      - SENSOR_MAC=94:A9:90:1C:81:19
+      - MQTT_HOST=localhost
+      - MQTT_PORT=8883
+      - TOPIC_BASE=io25m025
+      # If your ESP32 sometimes sends single values first humidity, set: FIRST_VALUE=hum
+      - FIRST_VALUE=temp
+    volumes:
+      - ./certs:/certs:ro
+      # DBus socket for BlueZ access (required by assignment)
+      - /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket
+    depends_on:
+      - mosquitto
+    restart: unless-stopped
+
+  client:
+    container_name: client
+    build:
+      context: ./client
+      dockerfile: Containerfile
+    network_mode: host
+    environment:
+      - MQTT_HOST=localhost
+      - MQTT_PORT=8883
+      - TOPIC_BASE=io25m025
+    volumes:
+      - ./certs:/certs:ro
+    depends_on:
+      - mosquitto
+    restart: unless-stopped

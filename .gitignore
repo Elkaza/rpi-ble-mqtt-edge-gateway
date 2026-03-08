@@ -1,0 +1,143 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Container / Podman
+.podman/
+container_*
+podman_logs/
+
+# Temporary / backup files
+*.bak
+*.tmp
+*.log
+*.swp
+*.backup
+*~
+.~*
+
+# Generated logs from runs
+hw2_run.log
+hw2_run.log.*
+*.log.backup
+
+# Python virtualenv and development
+.python-version
+.env
+.env.local
+
+# Mosquitto state files (if persistence enabled)
+mosquitto.db
+
+# BLE / Bluetooth related
+bluez_*
+dbus_*
+
+# Temporary certificate files (but keep CA certs in certs/)
+temp_certs/
+*.csr.tmp
+*.key.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+.directory
+*.swp
+*.swo
+
+# Editor temp files
+.*.swp
+.*.swo
+*.tmp
+*~
+
+# Podman compose local state (if any)
+.podman-compose.override.yml
+
+# Docker/Podman images built locally (will be rebuilt)
+# Note: remove this line if you want to commit locally built images
+*.tar
+*.tar.gz
+
+# Development notes / scratch files
+NOTES.md
+SCRATCH.md
+dev_notes.txt
+test_*.py
+
+# Local configuration overrides (but keep docker-compose.yml committed)
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Hardware/Device specific logs
+device_*.log
+sensor_*.log
+
+# System-level Mosquitto logs (if mounted from host)
+/var/log/mosquitto/
+
+# Python cache
+*.pyc
+.pytest_cache/
+.mypy_cache/

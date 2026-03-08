@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+import os
+import re
+import sys
+import time
+from datetime import datetime, timezone
+
+from pydbus import SystemBus
+from gi.repository import GLib
+
+import paho.mqtt.client as mqtt
+
+BLUEZ = "org.bluez"
+
+OM_IFACE = "org.freedesktop.DBus.ObjectManager"
+PROPS_IFACE = "org.freedesktop.DBus.Properties"
+
+DEV_IFACE = "org.bluez.Device1"
+CHRC_IFACE = "org.bluez.GattCharacteristic1"
+
+# Nordic UART Service (NUS) notify characteristic UUID used by many ESP32 BLE UART examples
+NUS_NOTIFY_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+
+# Patterns for your ESP32 text payload
+RE_TH = re.compile(
+    r"T\s*=\s*([-+]?\d+(?:\.\d+)?)\s*(?:C)?\s*[,; ]+\s*H\s*=\s*([-+]?\d+(?:\.\d+)?)",
+    re.IGNORECASE
+)
+RE_FLOATS = re.compile(r"[-+]?\d+(?:\.\d+)?")
+
+def utc_ts():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+def log(msg):
+    print(f"{utc_ts()} {msg}", flush=True)
+
+def mac_to_dev_path(mac: str) -> str:
+    return "/org/bluez/hci0/dev_" + mac.strip().upper().replace(":", "_")
+
+def bytes_to_text(v):
+    try:
+        return bytes(v).decode("utf-8", errors="replace").strip()
+    except Exception:
+        return str(list(v))
+
+def get_managed_objects(bus):
+    m = bus.get(BLUEZ, "/")
+    return m.GetManagedObjects()
+
+def find_notify_char(objects: dict, dev_path: str, uuid: str):
+    uuid = uuid.lower()
+    for path, ifaces in objects.items():
+        if not path.startswith(dev_path):
+            continue
+        ch = ifaces.get(CHRC_IFACE)
+        if not ch:
+            continue
+        u = str(ch.get("UUID", "")).lower()
+        if u == uuid:
+            return path
+    return None
+
+def ensure_connected(bus, dev_path: str, retries=10, delay=1.0):
+    dev = bus.get(BLUEZ, dev_path)
+    props = bus.get(BLUEZ, dev_path)
+    for attempt in range(1, retries + 1):
+        try:
+            log(f"Connecting (attempt {attempt}/{retries})...")
+            dev.Connect()
+            # quick sanity check
+            connected = props.Get(DEV_IFACE, "Connected")
+            if connected:
+                return True
+        except Exception as e:
+            log(f"Connect error: {e}")
+        time.sleep(delay)
+        delay = min(delay * 1.5, 8.0)
+    return False
+
+def setup_mqtt():
+    # Broker runs on host network in this setup, so localhost matches your cert CN=localhost
+    host = os.getenv("MQTT_HOST", "localhost")
+    port = int(os.getenv("MQTT_PORT", "8883"))
+
+    ca = os.getenv("MQTT_CA", "/certs/ca.crt")
+    cert = os.getenv("MQTT_CERT", "/certs/ble.crt")
+    key = os.getenv("MQTT_KEY", "/certs/ble.key")
+
+    base = os.getenv("TOPIC_BASE", "io25m025")
+    topic_temp = os.getenv("TOPIC_TEMP", f"{base}/temperature")
+    topic_hum = os.getenv("TOPIC_HUM", f"{base}/humidity")
+
+    client_id = os.getenv("MQTT_CLIENT_ID", "ble")
+
+    c = mqtt.Client(client_id=client_id, clean_session=True)
+
+    # TLS + client certificate auth
+    c.tls_set(ca_certs=ca, certfile=cert, keyfile=key)
+    # Hostname matches CN=localhost in your server cert when using host network
+    c.tls_insecure_set(False)
+
+    def on_connect(client, userdata, flags, rc):
+        if rc == 0:
+            log("[mqtt] connected OK")
+        else:
+            log(f"[mqtt] connect failed rc={rc}")
+
+    def on_disconnect(client, userdata, rc):
+        log(f"[mqtt] disconnected rc={rc}")
+
+    c.on_connect = on_connect
+    c.on_disconnect = on_disconnect
+
+    log(f"[mqtt] connecting to {host}:{port} with mTLS (CN=ble -> username)")
+    c.connect(host, port, keepalive=30)
+    c.loop_start()
+
+    return c, topic_temp, topic_hum
+
+class NotifyHandler:
+    def __init__(self, mqtt_client, topic_temp, topic_hum):
+        self.mqtt = mqtt_client
+        self.topic_temp = topic_temp
+        self.topic_hum = topic_hum
+        self.last_temp = None
+        self.last_hum = None
+
+        # If the ESP32 sends single values alternately, we toggle.
+        # Default assumes first value = temperature (can override with FIRST_VALUE=hum)
+        first = os.getenv("FIRST_VALUE", "temp").strip().lower()
+        self.next_is_temp = (first != "hum")
+
+    def publish(self, topic, value):
+        payload = f"{value:.2f}"
+        self.mqtt.publish(topic, payload, qos=0, retain=False)
+
+    def handle_text(self, text: str):
+        # 1) Preferred format: contains both T and H in one message
+        m = RE_TH.search(text)
+        if m:
+            temp = float(m.group(1))
+            hum = float(m.group(2))
+            self.last_temp = temp
+            self.last_hum = hum
+            self.publish(self.topic_temp, temp)
+            self.publish(self.topic_hum, hum)
+            log(f"temp={temp:.2f}C  hum={hum:.2f}%  (published)")
+            return
+
+        # 2) Fallback: find floats in text; if two floats, treat as temp+hum
+        nums = [float(x) for x in RE_FLOATS.findall(text)]
+        if len(nums) >= 2:
+            temp, hum = nums[0], nums[1]
+            self.last_temp = temp
+            self.last_hum = hum
+            self.publish(self.topic_temp, temp)
+            self.publish(self.topic_hum, hum)
+            log(f"temp={temp:.2f}C  hum={hum:.2f}%  (published)")
+            return
+
+        # 3) Single value: alternate between temp and humidity
+        if len(nums) == 1:
+            v = nums[0]
+            if self.next_is_temp:
+                self.last_temp = v
+                self.publish(self.topic_temp, v)
+                log(f"temp={v:.2f}C  hum={self.last_hum if self.last_hum is not None else 'None'}  (published temp)")
+            else:
+                self.last_hum = v
+                self.publish(self.topic_hum, v)
+                log(f"temp={self.last_temp if self.last_temp is not None else 'None'}  hum={v:.2f}%  (published hum)")
+            self.next_is_temp = not self.next_is_temp
+            return
+
+        # 4) Nothing useful
+        log(f"unparsed notify: {text!r}")
+
+def main():
+    mac = os.getenv("SENSOR_MAC", "").strip()
+    if not mac:
+        print("ERROR: SENSOR_MAC env var not set (e.g. export SENSOR_MAC=94:A9:90:1C:81:19)", file=sys.stderr)
+        sys.exit(2)
+
+    dev_path = mac_to_dev_path(mac)
+
+    mqtt_client, topic_temp, topic_hum = setup_mqtt()
+    handler = NotifyHandler(mqtt_client, topic_temp, topic_hum)
+
+    bus = SystemBus()
+
+    log("Starting discovery on /org/bluez/hci0 ...")
+    objects = get_managed_objects(bus)
+
+    # Ensure the device object exists (can appear after scan)
+    # If not present, we wait a bit and re-fetch objects.
+    for _ in range(15):
+        objects = get_managed_objects(bus)
+        if dev_path in objects:
+            break
+        time.sleep(1)
+
+    if dev_path in objects:
+        log(f"Found device at {dev_path}")
+    else:
+        log(f"Device not found yet at {dev_path} (will still try connect)")
+
+    if not ensure_connected(bus, dev_path, retries=10):
+        print("ERROR: Could not connect to BLE device after retries.", file=sys.stderr)
+        sys.exit(3)
+
+    # After connect, services/characteristics may need time to resolve
+    notify_path = None
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        objects = get_managed_objects(bus)
+        notify_path = find_notify_char(objects, dev_path, NUS_NOTIFY_UUID)
+        if notify_path:
+            break
+        time.sleep(1)
+
+    if not notify_path:
+        print("ERROR: Notify characteristic not found. Check UUID and that ESP32 exposes NUS notify.", file=sys.stderr)
+        sys.exit(4)
+
+    log(f"Using notify characteristic: {notify_path}")
+    ch = bus.get(BLUEZ, notify_path)
+    props = bus.get(BLUEZ, notify_path)
+
+    def on_props_changed(iface, changed, invalidated):
+        if iface != CHRC_IFACE:
+            return
+        if "Value" in changed:
+            text = bytes_to_text(changed["Value"])
+            handler.handle_text(text)
+
+    props.onPropertiesChanged = on_props_changed
+
+    try:
+        ch.StartNotify()
+        log("Notify started")
+    except Exception as e:
+        print(f"ERROR: StartNotify failed: {e}", file=sys.stderr)
+        sys.exit(5)
+
+    GLib.MainLoop().run()
+
+if __name__ == "__main__":
+    main()
