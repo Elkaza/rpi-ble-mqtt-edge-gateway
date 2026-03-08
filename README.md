@@ -18,6 +18,8 @@ MQTT Client Container (Data Display)
 
 The system reads temperature and humidity values from a remote BLE sensor device and reliably publishes them to an MQTT broker with enterprise-grade security.
 
+**Sensor node:** ESP32-S3 running custom BLE firmware with a DHT22 sensor, exposing data via Nordic UART Service (NUS).
+
 ## Key Features
 
 - **BLE Connectivity**: Scans for and connects to remote ESP32 DHT22 sensor via Nordic UART Service
@@ -54,7 +56,6 @@ The system reads temperature and humidity values from a remote BLE sensor device
 .
 ├── README.md                      # This file
 ├── docker-compose.yml             # Container orchestration
-├── Dockerfile.ble                 # Legacy BLE Dockerfile (see ble/Containerfile)
 │
 ├── ble/                          # BLE Gateway Service
 │   ├── Containerfile             # Container build instructions
@@ -70,12 +71,14 @@ The system reads temperature and humidity values from a remote BLE sensor device
 │   ├── Containerfile             # Container build instructions
 │   └── mosquitto.conf            # Broker configuration (TLS, auth)
 │
-└── certs/                        # X.509 Certificate Authority (CA)
-    ├── ca.crt, ca.key            # Root CA certificate and key
-    ├── ca.srl, ca.csr            # Certificate serial number log
-    ├── mosquitto.{crt,csr,key}   # Mosquitto broker certificate
-    ├── ble.{crt,csr,key}         # BLE gateway client certificate
-    └── client.{crt,csr,key}      # MQTT client certificate
+└── certs/                        # X.509 Certificates (public only)
+    ├── ca.crt                     # Root CA certificate
+    ├── ca.srl                     # Certificate serial number log
+    ├── mosquitto.crt, mosquitto.csr  # Mosquitto broker certificate + request
+    ├── ble.crt, ble.csr           # BLE gateway client certificate + request
+    └── client.crt, client.csr     # MQTT client certificate + request
+    
+    Note: Private keys (*.key files) are excluded from this repository
 ```
 
 ## Requirements
@@ -115,7 +118,7 @@ Configuration in `mosquitto/mosquitto.conf`:
 - **Port**: 8883 (TLS-only, no plaintext)
 - **Authentication**: Mandatory client certificates (mTLS)
 - **CA Verification**: All clients must present signed certificates
-- **Persistence**: Disabled (in-memory messages)
+- **Persistence**: Disabled (messages are not persisted; all data flows in real-time)
 
 ## Installation & Setup
 
@@ -348,19 +351,14 @@ This sets:
 - ✅ **Client Authentication**: X.509 certificates with certificate verification
 - ✅ **Authorization**: Username mapped from certificate CN
 - ✅ **No Hardcoded Credentials**: Uses certificate-based auth only
-- ⚠️ **Message Persistence**: Disabled (messages purged on disconnect)
+- ✅ **No Message Persistence**: Real-time data flow with no disk persistence (as designed)
 
 ### Production Hardening
 
 For production use, consider:
 
-1. **Store certificates securely**: Use volume mounts with restricted permissions
-   ```bash
-   chmod 600 certs/*.key
-   chown root:root certs/
-   ```
-
-2. **Enable message persistence** in Mosquitto for data integrity
+1. **Secure certificate handling**: Private keys are excluded from version control; generate and manage securely on the target system
+2. **Enable message persistence** in Mosquitto if message durability is required
 3. **Implement ACL rules** in Mosquitto for fine-grained access control
 4. **Set up monitoring**: Collect and analyze logs from all three services
 5. **Use secrets management**: For sensitive configuration (if extended)
